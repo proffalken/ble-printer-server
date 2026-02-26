@@ -46,6 +46,8 @@ from timiniprint.models import PrinterModel, PrinterModelRegistry
 from timiniprint.print_job import PrintJobBuilder, PrintSettings
 
 BLE_WRITE_UUID = "0000ae01-0000-1000-8000-00805f9b34fb"
+MAX_BODY_BYTES = 10_240  # 10 KB — enough for any reasonable label text
+BLE_PRINT_TIMEOUT = 60.0  # seconds before a stuck BLE job is abandoned
 
 
 def compose_qr_text_image(text: str, printer_width: int) -> Image.Image:
@@ -108,7 +110,7 @@ class PrintServer:
             if self.args.serial:
                 self._print_serial(text)
             else:
-                asyncio.run(self._print_ble(text))
+                asyncio.run(asyncio.wait_for(self._print_ble(text), timeout=BLE_PRINT_TIMEOUT))
 
     def _print_serial(self, text: str) -> None:
         model = require_model(self._registry, self.args.model)
@@ -160,7 +162,17 @@ class _PrintHandler(BaseHTTPRequestHandler):
         if "text" in qs:
             return qs["text"][0]
         if self.command == "POST":
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                self._respond(400, "Invalid Content-Length.\n")
+                return ""  # signal handled, empty string caught by strip() check
+            if length < 0:
+                self._respond(400, "Invalid Content-Length.\n")
+                return ""
+            if length > MAX_BODY_BYTES:
+                self._respond(413, f"Request body too large (max {MAX_BODY_BYTES} bytes).\n")
+                return ""
             if length:
                 return self.rfile.read(length).decode("utf-8", errors="replace")
         return None
@@ -186,7 +198,7 @@ class _PrintHandler(BaseHTTPRequestHandler):
             self._respond(200, "OK\n")
         except Exception as exc:
             print(f"[ERROR] {exc}", file=sys.stderr, flush=True)
-            self._respond(500, f"Print error: {exc}\n")
+            self._respond(500, "Print error — check server logs.\n")
 
     def do_GET(self) -> None:
         self._handle()

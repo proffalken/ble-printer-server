@@ -27,6 +27,15 @@ COPY print_server.py .
 ENV PRINT_HOST=0.0.0.0
 ENV PRINT_PORT=8080
 
+# Run as non-root. The bluetooth group (GID 112 on Debian) gives access to
+# BlueZ D-Bus; the actual GID on your host may differ — check with
+# `getent group bluetooth` and set BLUETOOTH_GID in docker-compose if needed.
+ARG BLUETOOTH_GID=112
+RUN groupadd -g ${BLUETOOTH_GID} bluetooth-host 2>/dev/null || true \
+ && useradd -r -u 1000 -G ${BLUETOOTH_GID} printer
+
+USER printer
+
 EXPOSE 8080
 
 CMD ["python", "-u", "print_server.py"]

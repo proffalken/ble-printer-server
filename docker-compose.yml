@@ -7,7 +7,11 @@ services:
     network_mode: host
     volumes:
       - /var/run/dbus:/var/run/dbus
-    privileged: true   # needed for raw BLE socket access
+    cap_add:
+      - NET_ADMIN       # BLE socket operations
+      - NET_RAW         # raw Bluetooth socket access
+    # If BLE fails to connect, replace the cap_add block above with:
+    #   privileged: true
 
     environment:
       PRINTER_BLUETOOTH: "X6"   # name prefix or MAC address of your printer
