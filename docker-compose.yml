@@ -7,11 +7,10 @@ services:
     network_mode: host
     volumes:
       - /var/run/dbus:/var/run/dbus
-    cap_add:
-      - NET_ADMIN       # BLE socket operations
-      - NET_RAW         # raw Bluetooth socket access
-    # If BLE fails to connect, replace the cap_add block above with:
-    #   privileged: true
+    # NET_ADMIN + NET_RAW is preferred over privileged: true, but AppArmor on
+    # some hosts blocks D-Bus access needed by bleak. If BLE fails with an
+    # AppArmor/DBus error, switch to privileged: true instead.
+    privileged: true
 
     environment:
       PRINTER_BLUETOOTH: "X6"   # name prefix or MAC address of your printer
