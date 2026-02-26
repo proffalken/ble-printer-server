@@ -1,0 +1,16 @@
+services:
+  print-server:
+    build: .
+    restart: unless-stopped
+
+    # BLE requires access to the host's Bluetooth stack via D-Bus
+    network_mode: host
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+    privileged: true   # needed for raw BLE socket access
+
+    environment:
+      PRINTER_BLUETOOTH: "X6"   # name prefix or MAC address of your printer
+      PRINT_PORT: "8080"
+      PRINT_HOST: "0.0.0.0"
+      # PRINTER_MODEL: ""       # uncomment to override auto-detection

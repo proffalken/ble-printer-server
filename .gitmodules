@@ -1,0 +1,3 @@
+[submodule "TiMini-Print"]
+	path = TiMini-Print
+	url = git@github.com:Dejniel/TiMini-Print.git

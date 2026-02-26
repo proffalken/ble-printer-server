@@ -1,0 +1,19 @@
+[project]
+name = "ble-print-server"
+version = "0.1.0"
+description = "Network BLE print server — prints text + QR code to TiMini-compatible thermal printers"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=9.0",
+    "bleak>=0.22",
+    "crc8>=0.2.0",
+    "pyserial>=3.5",
+    "qrcode[pil]>=7.0",
+]
+
+[project.scripts]
+ble-print-server = "print_server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
