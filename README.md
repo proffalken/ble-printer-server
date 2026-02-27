@@ -1,13 +1,20 @@
 # BLE Print Server
 
-A lightweight HTTP server that accepts text and prints it — along with a QR code of that text — to a TiMini-compatible Bluetooth thermal printer over BLE.
+A lightweight HTTP server that accepts text and prints it — along with a QR code — to a TiMini-compatible Bluetooth thermal printer over BLE.
+
+The displayed text and the QR code data can be set independently, or set to the same value by providing only one of them.
 
 ```
-POST /print   body = text to print
-GET  /print   ?text=text to print
+GET  /print?text=Hello+World
+GET  /print?qr=https://example.com
+GET  /print?text=Hello+World&qr=https://example.com
+
+POST /print   {"text": "Hello World", "qr": "https://example.com"}
 ```
 
-The output is a QR code on the left half of the paper with the text vertically centred on the right.o
+If only `text` is given, the QR code encodes that same text. If only `qr` is given, it is also used as the displayed text. If both are given, they are used independently.
+
+The output is a QR code on the left half of the paper with the text vertically centred on the right.
 
 ## Supported printers
 
@@ -26,8 +33,16 @@ docker compose up -d
 Then print something:
 
 ```bash
-curl -X POST http://localhost:8080/print -d "https://example.com"
+# Same text and QR code
 curl "http://localhost:8080/print?text=Hello+World"
+
+# Different text and QR code
+curl "http://localhost:8080/print?text=Hello+World&qr=https://example.com"
+
+# POST with JSON
+curl -X POST http://localhost:8080/print \
+     -H "Content-Type: application/json" \
+     -d '{"text": "Hello World", "qr": "https://example.com"}'
 ```
 
 ## Quick start (local)

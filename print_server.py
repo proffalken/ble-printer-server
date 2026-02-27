@@ -13,14 +13,20 @@ Environment variables (used as defaults):
   PRINT_HOST          Bind address (default: 0.0.0.0)
 
 Send text to print:
-  curl -X POST http://localhost:8080/print -d "https://example.com"
   curl "http://localhost:8080/print?text=Hello"
+  curl "http://localhost:8080/print?text=Hello+World&qr=https://example.com"
+  curl -X POST http://localhost:8080/print -H "Content-Type: application/json" \
+       -d '{"text": "Hello World", "qr": "https://example.com"}'
+
+When only one of text or qr is provided, both the displayed text and the QR code data
+are set to that value. When both are provided, they are used independently.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -50,7 +56,7 @@ MAX_BODY_BYTES = 10_240  # 10 KB — enough for any reasonable label text
 BLE_PRINT_TIMEOUT = 60.0  # seconds before a stuck BLE job is abandoned
 
 
-def compose_qr_text_image(text: str, printer_width: int) -> Image.Image:
+def compose_qr_text_image(display_text: str, qr_data: str, printer_width: int) -> Image.Image:
     try:
         import qrcode
     except ImportError:
@@ -59,7 +65,7 @@ def compose_qr_text_image(text: str, printer_width: int) -> Image.Image:
     qr_size = printer_width // 2
 
     qr = qrcode.QRCode(border=1)
-    qr.add_data(text)
+    qr.add_data(qr_data)
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
     qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
@@ -68,7 +74,7 @@ def compose_qr_text_image(text: str, printer_width: int) -> Image.Image:
     font_path = find_monospace_bold_font()
     columns = columns_for_width(text_area_width)
     font = fit_truetype_font(font_path, text_area_width, columns)
-    lines = wrap_text_lines(text, columns)
+    lines = wrap_text_lines(display_text, columns)
     lh = font_line_height(font)
     text_block_height = max(1, lh * len(lines))
 
@@ -87,9 +93,9 @@ def compose_qr_text_image(text: str, printer_width: int) -> Image.Image:
     return out
 
 
-def build_print_data(text: str, model: PrinterModel) -> bytes:
+def build_print_data(display_text: str, qr_data: str, model: PrinterModel) -> bytes:
     printer_width = PrintJobBuilder._normalized_width(model.width)
-    img = compose_qr_text_image(text, printer_width)
+    img = compose_qr_text_image(display_text, qr_data, printer_width)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
     try:
@@ -105,21 +111,21 @@ class PrintServer:
         self._registry = PrinterModelRegistry.load()
         self._lock = threading.Lock()
 
-    def print_text(self, text: str) -> None:
+    def print_text(self, display_text: str, qr_data: str) -> None:
         with self._lock:
             if self.args.serial:
-                self._print_serial(text)
+                self._print_serial(display_text, qr_data)
             else:
-                asyncio.run(asyncio.wait_for(self._print_ble(text), timeout=BLE_PRINT_TIMEOUT))
+                asyncio.run(asyncio.wait_for(self._print_ble(display_text, qr_data), timeout=BLE_PRINT_TIMEOUT))
 
-    def _print_serial(self, text: str) -> None:
+    def _print_serial(self, display_text: str, qr_data: str) -> None:
         model = require_model(self._registry, self.args.model)
-        data = build_print_data(text, model)
+        data = build_print_data(display_text, qr_data, model)
         write_serial_blocking(
             self.args.serial, data, model.img_mtu or 180, model.interval_ms or 4
         )
 
-    async def _print_ble(self, text: str) -> None:
+    async def _print_ble(self, display_text: str, qr_data: str) -> None:
         from bleak import BleakClient, BleakScanner
 
         target = self.args.bluetooth
@@ -138,7 +144,7 @@ class PrintServer:
             address, name = target, (match.name if match else target)
 
         model = resolve_model(self._registry, name, self.args.model)
-        data = build_print_data(text, model)
+        data = build_print_data(display_text, qr_data, model)
         mtu = model.img_mtu or 20
         interval = (model.interval_ms or 4) / 1000
 
@@ -154,27 +160,52 @@ class _PrintHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"[{self.address_string()}] {fmt % args}", flush=True)
 
-    def _extract_text(self) -> str | None:
-        parsed = urlparse(self.path)
-        if parsed.path != "/print":
-            return None
-        qs = parse_qs(parsed.query)
-        if "text" in qs:
-            return qs["text"][0]
+    def _extract_params(self) -> tuple[str, str] | None:
+        """Return (display_text, qr_data), or None if the request cannot be handled.
+
+        Sends an error response itself before returning None when the path matches
+        but the payload is malformed; the caller must not send a second response.
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        text_param = qs["text"][0] if "text" in qs else None
+        qr_param = qs["qr"][0] if "qr" in qs else None
+
+        if text_param is not None or qr_param is not None:
+            text = text_param if text_param is not None else qr_param
+            qr = qr_param if qr_param is not None else text_param
+            return text, qr
+
         if self.command == "POST":
             try:
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:
                 self._respond(400, "Invalid Content-Length.\n")
-                return ""  # signal handled, empty string caught by strip() check
+                return None
             if length < 0:
                 self._respond(400, "Invalid Content-Length.\n")
-                return ""
+                return None
             if length > MAX_BODY_BYTES:
                 self._respond(413, f"Request body too large (max {MAX_BODY_BYTES} bytes).\n")
-                return ""
+                return None
             if length:
-                return self.rfile.read(length).decode("utf-8", errors="replace")
+                raw = self.rfile.read(length).decode("utf-8", errors="replace")
+                try:
+                    body = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._respond(400, "Invalid JSON body.\n")
+                    return None
+                if not isinstance(body, dict):
+                    self._respond(400, "JSON body must be an object.\n")
+                    return None
+                text_param = body.get("text")
+                qr_param = body.get("qr")
+                if text_param is None and qr_param is None:
+                    self._respond(400, 'JSON body must contain "text" and/or "qr".\n')
+                    return None
+                text = text_param if text_param is not None else qr_param
+                qr = qr_param if qr_param is not None else text_param
+                return str(text), str(qr)
+
         return None
 
     def _respond(self, status: int, body: str) -> None:
@@ -186,15 +217,18 @@ class _PrintHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _handle(self) -> None:
-        text = self._extract_text()
-        if text is None:
-            self._respond(404, "Not found.\n\nUsage: POST or GET /print with body or ?text=...\n")
+        if urlparse(self.path).path != "/print":
+            self._respond(404, "Not found.\n\nUsage: GET /print?text=...&qr=... or POST /print with JSON body.\n")
             return
-        if not text.strip():
+        params = self._extract_params()
+        if params is None:
+            return  # error response already sent by _extract_params
+        display_text, qr_data = params
+        if not display_text.strip() or not qr_data.strip():
             self._respond(400, "Empty text.\n")
             return
         try:
-            self._server.print_text(text)
+            self._server.print_text(display_text, qr_data)
             self._respond(200, "OK\n")
         except Exception as exc:
             print(f"[ERROR] {exc}", file=sys.stderr, flush=True)
@@ -261,8 +295,8 @@ def main() -> int:
     server = PrintServer(args)
     httpd = HTTPServer((args.host, args.port), _make_handler(server))
     print(f"Print server listening on {args.host}:{args.port}", flush=True)
-    print(f"  POST http://{args.host}:{args.port}/print  (text in body)")
-    print(f"  GET  http://{args.host}:{args.port}/print?text=...")
+    print(f"  GET  http://{args.host}:{args.port}/print?text=...&qr=...")
+    print(f"  POST http://{args.host}:{args.port}/print  (JSON: {{\"text\": \"...\", \"qr\": \"...\"}})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
