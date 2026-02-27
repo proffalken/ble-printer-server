@@ -7,7 +7,7 @@ POST /print   body = text to print
 GET  /print   ?text=text to print
 ```
 
-The output is a QR code on the left half of the paper with the text vertically centred on the right.
+The output is a QR code on the left half of the paper with the text vertically centred on the right.o
 
 ## Supported printers
 
@@ -59,6 +59,21 @@ BLE access from a container requires:
 - `privileged: true` — for raw BLE socket access
 
 The provided `docker-compose.yml` sets all of these.
+
+## AI Statment
+
+For those of you wondering or looking at the commits - yes, this is almost entirely written by Claude Code.
+
+I've spent years developing and contributing software, this was a deliberate test to see what Claude was capable of and I'm pretty impressed.
+
+I fed it the concept, nudged it via prompts, and asked it to use certain libraries, then asked it to do a security test.
+
+**At all points in the process it came up with code and approaches that were what I'd expect from a junior developer, but instead of rewriting
+mistakes myself I gave it a new prompt and told it to change direction, which it did**
+
+If you don't want AI code on your home network at all, don't use this project.  If you're happy with AI Generated code that has been reviewed by a
+human and tested thoroughly then welcome to the project and I'd love to hear your thoughts/PR's on future improvements!
+
 
 ## Credits
 
