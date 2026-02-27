@@ -15,6 +15,7 @@ GET  /print?qr=https://example.com
 GET  /print?text=Hello+World
 POST /print   {"text": "Order #1\nSmashburger\n\nToppings:\n\tCheese\n\tBacon"}
 POST /print   {"text": {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}}
+POST /print   {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}
 
 # QR + text via POST
 POST /print   {"text": "Box 1", "qr": "http://inventory.example.com/box/1"}
@@ -45,10 +46,15 @@ curl -X POST http://localhost:8080/print \
      -H "Content-Type: application/json" \
      -d '{"text": "Order #1\nSmashburger\n\nToppings:\n\tCheese\n\tBacon"}'
 
-# Nested object printed as plain text
+# Nested object printed as plain text (with envelope)
 curl -X POST http://localhost:8080/print \
      -H "Content-Type: application/json" \
      -d '{"text": {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}}'
+
+# Bare JSON object — no envelope needed
+curl -X POST http://localhost:8080/print \
+     -H "Content-Type: application/json" \
+     -d '{"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}'
 ```
 
 ## Quick start (local)
