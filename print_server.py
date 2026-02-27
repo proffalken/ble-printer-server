@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BLE Print Server — prints text + QR code to a TiMini-compatible thermal printer over BLE.
+"""BLE Print Server — prints text and/or a QR code to a TiMini-compatible thermal printer over BLE.
 
 Usage:
   python print_server.py [--bluetooth NAME_OR_ADDR] [--port 8080]
@@ -12,14 +12,25 @@ Environment variables (used as defaults):
   PRINT_PORT          HTTP port (default: 8080)
   PRINT_HOST          Bind address (default: 0.0.0.0)
 
-Send text to print:
-  curl "http://localhost:8080/print?text=Hello"
-  curl "http://localhost:8080/print?text=Hello+World&qr=https://example.com"
-  curl -X POST http://localhost:8080/print -H "Content-Type: application/json" \
-       -d '{"text": "Hello World", "qr": "https://example.com"}'
+Modes
+-----
+QR + text  — include a "qr" field; the QR code fills the left half, text the right.
+             "text" falls back to the "qr" value if omitted.
+Text only  — omit "qr" entirely; text fills the full paper width.
+             "text" may be a plain string (\\n and \\t are honoured) or a nested
+             JSON object/array, which is formatted into readable plain text.
 
-When only one of text or qr is provided, both the displayed text and the QR code data
-are set to that value. When both are provided, they are used independently.
+Examples:
+  # Label: QR code + text side by side
+  curl "http://localhost:8080/print?text=Box+1&qr=http://inventory.example.com/box/1"
+
+  # Receipt / order: text only, full width
+  curl -X POST http://localhost:8080/print -H "Content-Type: application/json" \\
+       -d '{"text": "Order #1\\nSmashburger\\n\\nToppings:\\n\\tCheese\\n\\tBacon"}'
+
+  # Nested object flattened to plain text
+  curl -X POST http://localhost:8080/print -H "Content-Type: application/json" \\
+       -d '{"text": {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}}'
 """
 
 from __future__ import annotations
@@ -56,25 +67,69 @@ MAX_BODY_BYTES = 10_240  # 10 KB — enough for any reasonable label text
 BLE_PRINT_TIMEOUT = 60.0  # seconds before a stuck BLE job is abandoned
 
 
-def compose_qr_text_image(display_text: str, qr_data: str, printer_width: int) -> Image.Image:
-    try:
-        import qrcode
-    except ImportError:
-        raise RuntimeError("qrcode is required: pip install 'qrcode[pil]'")
+def _format_value(value: object, indent: int = 0) -> str:
+    """Recursively format a JSON value (dict, list, or scalar) as plain text."""
+    pad = "  " * indent
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        lines = []
+        for k, v in value.items():
+            if isinstance(v, (dict, list)):
+                lines.append(f"{pad}{k}:")
+                lines.append(_format_value(v, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: {v}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(_format_value(item, indent))
+            else:
+                lines.append(f"{pad}{item}")
+        return "\n".join(lines)
+    return str(value)
 
-    qr_size = printer_width // 2
 
-    qr = qrcode.QRCode(border=1)
-    qr.add_data(qr_data)
-    qr.make(fit=True)
-    qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
-    qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
+def _text_lines(text: str, columns: int) -> list[str]:
+    """Split on newlines, expand tabs, then word-wrap each line."""
+    result: list[str] = []
+    for raw in text.split("\n"):
+        expanded = raw.expandtabs(4)
+        if not expanded.strip():
+            result.append("")
+        else:
+            result.extend(wrap_text_lines(expanded, columns))
+    return result
 
-    text_area_width = printer_width - qr_size
+
+def compose_image(display_text: str, qr_data: str | None, printer_width: int) -> Image.Image:
+    """Compose the print image.
+
+    When qr_data is provided: QR code on the left half, text on the right.
+    When qr_data is None: text only, spanning the full paper width.
+    """
+    if qr_data is not None:
+        try:
+            import qrcode
+        except ImportError:
+            raise RuntimeError("qrcode is required: pip install 'qrcode[pil]'")
+        qr_size = printer_width // 2
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(qr_data)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
+        qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
+        text_area_width = printer_width - qr_size
+    else:
+        qr_size = 0
+        text_area_width = printer_width
+
     font_path = find_monospace_bold_font()
     columns = columns_for_width(text_area_width)
     font = fit_truetype_font(font_path, text_area_width, columns)
-    lines = wrap_text_lines(display_text, columns)
+    lines = _text_lines(display_text, columns)
     lh = font_line_height(font)
     text_block_height = max(1, lh * len(lines))
 
@@ -85,17 +140,19 @@ def compose_qr_text_image(display_text: str, qr_data: str, printer_width: int) -
         draw.text((0, y), line, font=font, fill=0)
         y += lh
 
-    total_height = max(qr_size, text_block_height)
-    out = Image.new("L", (printer_width, total_height), 255)
-    out.paste(qr_img, (0, (total_height - qr_size) // 2))
-    out.paste(text_img, (qr_size, (total_height - text_block_height) // 2))
+    if qr_data is not None:
+        total_height = max(qr_size, text_block_height)
+        out = Image.new("L", (printer_width, total_height), 255)
+        out.paste(qr_img, (0, (total_height - qr_size) // 2))
+        out.paste(text_img, (qr_size, (total_height - text_block_height) // 2))
+        return out
 
-    return out
+    return text_img
 
 
-def build_print_data(display_text: str, qr_data: str, model: PrinterModel) -> bytes:
+def build_print_data(display_text: str, qr_data: str | None, model: PrinterModel) -> bytes:
     printer_width = PrintJobBuilder._normalized_width(model.width)
-    img = compose_qr_text_image(display_text, qr_data, printer_width)
+    img = compose_image(display_text, qr_data, printer_width)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
     try:
@@ -111,21 +168,21 @@ class PrintServer:
         self._registry = PrinterModelRegistry.load()
         self._lock = threading.Lock()
 
-    def print_text(self, display_text: str, qr_data: str) -> None:
+    def print_text(self, display_text: str, qr_data: str | None) -> None:
         with self._lock:
             if self.args.serial:
                 self._print_serial(display_text, qr_data)
             else:
                 asyncio.run(asyncio.wait_for(self._print_ble(display_text, qr_data), timeout=BLE_PRINT_TIMEOUT))
 
-    def _print_serial(self, display_text: str, qr_data: str) -> None:
+    def _print_serial(self, display_text: str, qr_data: str | None) -> None:
         model = require_model(self._registry, self.args.model)
         data = build_print_data(display_text, qr_data, model)
         write_serial_blocking(
             self.args.serial, data, model.img_mtu or 180, model.interval_ms or 4
         )
 
-    async def _print_ble(self, display_text: str, qr_data: str) -> None:
+    async def _print_ble(self, display_text: str, qr_data: str | None) -> None:
         from bleak import BleakClient, BleakScanner
 
         target = self.args.bluetooth
@@ -160,20 +217,28 @@ class _PrintHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"[{self.address_string()}] {fmt % args}", flush=True)
 
-    def _extract_params(self) -> tuple[str, str] | None:
+    def _extract_params(self) -> tuple[str, str | None] | None:
         """Return (display_text, qr_data), or None if the request cannot be handled.
 
-        Sends an error response itself before returning None when the path matches
-        but the payload is malformed; the caller must not send a second response.
+        qr_data=None means text-only mode (no QR code, full-width text).
+        The presence of the "qr" key — not its value — determines the mode.
+        "text" may be a plain string, or a nested JSON object/array which is
+        formatted into readable plain text via _format_value.
+
+        Sends an error response before returning None when the path matched /print
+        but the payload was malformed; the caller must not send a second response.
         """
         qs = parse_qs(urlparse(self.path).query)
         text_param = qs["text"][0] if "text" in qs else None
         qr_param = qs["qr"][0] if "qr" in qs else None
 
         if text_param is not None or qr_param is not None:
-            text = text_param if text_param is not None else qr_param
-            qr = qr_param if qr_param is not None else text_param
-            return text, qr
+            if qr_param is not None:
+                # QR mode: text falls back to the qr value if not provided
+                return (text_param if text_param is not None else qr_param), qr_param
+            else:
+                # Text-only mode
+                return text_param, None
 
         if self.command == "POST":
             try:
@@ -197,14 +262,16 @@ class _PrintHandler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict):
                     self._respond(400, "JSON body must be an object.\n")
                     return None
-                text_param = body.get("text")
-                qr_param = body.get("qr")
-                if text_param is None and qr_param is None:
-                    self._respond(400, 'JSON body must contain "text" and/or "qr".\n')
+                text_val = body.get("text")
+                qr_val = body.get("qr")
+                if text_val is None and qr_val is None:
+                    # Bare object — treat the whole body as the text content
+                    return _format_value(body), None
+                if qr_val is not None and not isinstance(qr_val, str):
+                    self._respond(400, '"qr" must be a string.\n')
                     return None
-                text = text_param if text_param is not None else qr_param
-                qr = qr_param if qr_param is not None else text_param
-                return str(text), str(qr)
+                display_text = _format_value(text_val if text_val is not None else qr_val)
+                return display_text, qr_val  # qr_val is str or None
 
         return None
 
@@ -224,7 +291,7 @@ class _PrintHandler(BaseHTTPRequestHandler):
         if params is None:
             return  # error response already sent by _extract_params
         display_text, qr_data = params
-        if not display_text.strip() or not qr_data.strip():
+        if not display_text.strip():
             self._respond(400, "Empty text.\n")
             return
         try:

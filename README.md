@@ -1,20 +1,24 @@
 # BLE Print Server
 
-A lightweight HTTP server that accepts text and prints it — along with a QR code — to a TiMini-compatible Bluetooth thermal printer over BLE.
+A lightweight HTTP server that prints to a TiMini-compatible Bluetooth thermal printer over BLE. It supports two modes:
 
-The displayed text and the QR code data can be set independently, or set to the same value by providing only one of them.
+**QR + text** — include a `qr` field. The QR code fills the left half of the paper, the text the right. `text` falls back to the `qr` value if not provided.
+
+**Text only** — omit `qr` entirely. Text fills the full paper width. Useful for receipts, orders, or any free-form output. Newlines (`\n`) and tabs (`\t`) are honoured, and `text` may be a nested JSON object which is formatted into readable plain text.
 
 ```
-GET  /print?text=Hello+World
+# QR + text
+GET  /print?text=Box+1&qr=http://inventory.example.com/box/1
 GET  /print?qr=https://example.com
-GET  /print?text=Hello+World&qr=https://example.com
 
-POST /print   {"text": "Hello World", "qr": "https://example.com"}
+# Text only
+GET  /print?text=Hello+World
+POST /print   {"text": "Order #1\nSmashburger\n\nToppings:\n\tCheese\n\tBacon"}
+POST /print   {"text": {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}}
+
+# QR + text via POST
+POST /print   {"text": "Box 1", "qr": "http://inventory.example.com/box/1"}
 ```
-
-If only `text` is given, the QR code encodes that same text. If only `qr` is given, it is also used as the displayed text. If both are given, they are used independently.
-
-The output is a QR code on the left half of the paper with the text vertically centred on the right.
 
 ## Supported printers
 
@@ -33,16 +37,18 @@ docker compose up -d
 Then print something:
 
 ```bash
-# Same text and QR code
-curl "http://localhost:8080/print?text=Hello+World"
+# Label: QR code + text
+curl "http://localhost:8080/print?text=Box+1&qr=http://inventory.example.com/box/1"
 
-# Different text and QR code
-curl "http://localhost:8080/print?text=Hello+World&qr=https://example.com"
-
-# POST with JSON
+# Receipt: text only, full width
 curl -X POST http://localhost:8080/print \
      -H "Content-Type: application/json" \
-     -d '{"text": "Hello World", "qr": "https://example.com"}'
+     -d '{"text": "Order #1\nSmashburger\n\nToppings:\n\tCheese\n\tBacon"}'
+
+# Nested object printed as plain text
+curl -X POST http://localhost:8080/print \
+     -H "Content-Type: application/json" \
+     -d '{"text": {"order": "#1", "item": "Smashburger", "toppings": ["Cheese", "Bacon"]}}'
 ```
 
 ## Quick start (local)
