@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ble-printer-server
+  description: A basic HTTP server that prints a QR code and accompanying text on a cheap BLE printer
+  annotations:
+    github.com/project-slug: proffalken/ble-printer-server
+spec:
+  type: service
+  owner: user:default/proffalken
+  lifecycle: production
